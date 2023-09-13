@@ -1,8 +1,9 @@
 import os
+import cv2
 import asyncio
-from PIL import Image, ImageChops
 import numpy as np
 from skimage.morphology import opening, closing, disk
+from PIL import Image, ImageChops, ImageDraw
 import logging
 import argparse
 
@@ -17,15 +18,53 @@ async def process_images(img_path, textless_img_path, output_dir):
     im1 = await load_image(img_path)
     im2 = await load_image(textless_img_path)
     translucent = Image.new("RGBA", im1.size, (255, 0, 0, 127))
-    mask = ImageChops.difference(im1, im2).convert("L").point(lambda x: 127 if x else 0)
+    mask = ImageChops.difference(im1, im2).convert("L").point(lambda x: 255 if x > 0 else 0)  # Binary mask
 
     # Reduce noise on the mask
     mask_np = np.array(mask)
-    # mask_np = reduce_noise(mask_np)
+    mask_np = reduce_noise(mask_np)
     mask = Image.fromarray(mask_np)
 
-    im2.paste(translucent, (0, 0), mask)
+    # Convert PIL mask to OpenCV format
+    mask_cv = np.array(mask)
+
+    # Find contours
+    contours, _ = cv2.findContours(mask_cv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    bounding_boxes = []
+    polygons = []
+    for contour in contours:
+        # Get bounding box
+        x, y, w, h = cv2.boundingRect(contour)
+        bounding_boxes.append((x, y, x+w, y+h))
+
+        # Get polygon and reshape
+        polygon = contour.reshape(-1, 2)
+        polygon_list = [(point[0], point[1]) for point in polygon]
+
+        if len(polygon_list) >= 2:  # Ensure we have at least 2 coordinates
+            polygons.append(polygon_list)
+
+    # Preview
+    im_preview = im1.copy()
+    draw = ImageDraw.Draw(im_preview)
+    for box in bounding_boxes:
+        draw.rectangle(box, outline=(255, 0, 0))
+    for polygon in polygons:
+        draw.polygon(polygon, outline=(0, 255, 0))
+
+    preview_path = os.path.join(output_dir, f"preview_{os.path.basename(img_path)}")
+    im_preview.save(preview_path)
+    logger.info(f"Saved preview {preview_path}")
+
+    # Further saving or processing of bounding_boxes and polygons can be added
+
     output_path = os.path.join(output_dir, os.path.basename(img_path))
+    if mask is not None:
+        im2.paste(translucent, (0, 0), mask)
+    else:
+        im2.paste(translucent, (0, 0))
+
     im2.save(output_path)
     logger.info(f"Processed and saved {output_path}")
 
